@@ -1,0 +1,211 @@
+---
+title: "Machine Learning Peer Assessment Project"
+author: "Tim Gaertner"
+date: "March 16, 2015"
+output:
+  html_document:
+    fig_caption: yes
+    number_sections: yes
+    toc: yes
+---
+
+
+# Download and Read-In Raw Data
+```{r, echo=F}
+setwd("C:\\Users\\tgaertner\\Desktop\\Coursera\\8. Practical Machine Learning\\Week 3\\Practical-Machine-Learning")
+```
+
+* Download and Read in Training Data
+```{r cache=T, message=F}
+fileUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+if (!file.exists("training.csv")) {download.file(url = fileUrl, destfile = "training.csv")}
+trainingData <- read.csv(file = "training.csv")
+```
+
+* Download and Read in Testing Data
+```{r cache=T, message=F}
+fileUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+if (!file.exists("testing.csv")) {download.file(url = fileUrl, destfile = "testing.csv")}
+testingData <- read.csv(file = "testing.csv")
+```
+
+# Pre-Processing
+* Clean `cvtd_timestamp` variable by formatting as a date
+* Format all number based variables as numeric
+* Remove variables `X`,`user_name`, and `new_window` from model consideration as they cannot be used to score the testing data
+
+```{r}
+trainingData$cvtd_timestamp <- as.Date(trainingData$cvtd_timestamp,"%m/%d/%Y %H:%M")
+
+for (i in 1:length(names(trainingData))) {
+        if (grepl("dumbbell|forearm|arm|belt",names(trainingData)[i])){
+                trainingData[,i] <- as.numeric(trainingData[,i])
+        }
+}
+
+trainingData <- trainingData[,c(-1,-2,-6)]
+```
+
+## Creating Dummy Variables
+* Convert all factor variables to dummy variables
+```{r message=F}
+library(caret)
+```
+
+```{r cache=T, message=F}
+dummies <- dummyVars(classe ~ ., trainingData)
+numData <- as.data.frame(predict(dummies, trainingData))
+```
+
+## Zero and Near-Zero Variance Predictors
+* Remove all covariates from model consideration which have zero or near-zero variance
+```{r cache=T, message=F}
+nzv <- nearZeroVar(numData, saveMetrics= TRUE)
+dim(numData)
+
+nzv <- nearZeroVar(numData)
+filteredData <- numData[, -nzv]
+dim(filteredData)
+```
+
+## Data Cleansing
+* Replaces all missing values (NA) with 0
+
+```{r cache=T, message=F}
+for (j in 1:length(names(filteredData))) {
+        for (i in 1:nrow(filteredData)) {
+              if (is.na(filteredData[i,j])) {filteredData[i,j] <- 0}  
+        } 
+}
+```
+
+## Identifying Correlated Predictors
+* Remove highly correlated covariates from model consideration
+
+```{r,  cache=T, results="markup", message=F}
+dataCor <-  cor(filteredData)
+highCorr <- sum(abs(dataCor[upper.tri(dataCor)]) > .999)
+summary(dataCor[upper.tri(dataCor)])
+
+highlyCorData <- findCorrelation(dataCor, cutoff = .75)
+filteredData <- filteredData[,-highlyCorData]
+dataCor2 <- cor(filteredData[,sapply(filteredData, is.numeric)])
+summary(dataCor2[upper.tri(dataCor2)])
+```
+
+```{r results='hide'}
+numCov <- dim(filteredData)[2]
+```
+* Before modeling, we are left with `r numCov` covariates for model consideration
+
+## Partition Training and Testing Sets 
+
+```{r, echo=TRUE, cache=T, results="hide",error=FALSE,warning=FALSE, message=F}
+classe <- as.vector(trainingData[,"classe"])
+
+trainingData <- cbind(classe, filteredData)
+
+set.seed(1)
+inTrain <- createDataPartition(y = trainingData$classe, 
+                               p=0.5,
+                               list = FALSE)
+training <- trainingData[inTrain,]
+testing <- trainingData[-inTrain,]
+dim(training); dim(testing)
+```
+
+# Modeling
+
+## Model Building
+```{r, echo=T, cache=T, message=F}
+cvCtrl <- trainControl(method = "repeatedcv", repeats = 3)
+
+set.seed(1)
+rfTune <- train(classe ~ .,
+                data = training, 
+                method = "rf",
+                ntree=50,
+                trControl = cvCtrl
+                )
+```
+
+## Variable Importance
+* Looking at the variables with the highest importance in the Random Forest Model
+```{r results='markup'}
+varImp(rfTune)
+```
+
+* Plotting two of most important variables to the model
+```{r}
+qplot(x = pitch_forearm,y = num_window,data = training,colour = classe)
+```
+
+```{r, echo=T, cache=T, results="markup", message=F, warning=F}
+plot(randomForest(classe ~ ., data=training, keep.forest=FALSE, ntree=50), log="y")
+```
+
+## Model Testing for Out-of-Sample Error
+* Using cross-validation by splitting the training data into a training and testing set. The 50% training set was used to build the Random Forest model. The 50% testing set, which is considered new data to the model, is used to calculate the out-of-sample error.
+* The expected out-of-sample error is calculated as the misclassifications made by the model on new data (testing data)
+
+```{r, echo=T, cache=T, results="markup",message=F}
+conf <- confusionMatrix(testing$classe, predict(rfTune, testing))
+conf$table
+etable <- data.frame(actual=testing$classe,
+                     predicted=predict(rfTune, testing))
+eRate <- nrow(etable[!etable$actual==etable$predicted,]) / nrow(etable)
+```
+* From this we can expect the out-of-sample error to be `misclassifications / testing cases`, which in this case is `r eRate`.
+
+# Model Scoring New Data
+
+## Pre-Processing New Data
+* Format all number based variables as numeric
+* Remove variables `X`,`user_name`, and `new_window` from new testing data as they were not used to build the model
+
+```{r}
+for (i in 1:length(names(testingData))) {
+        if (grepl("dumbbell|forearm|arm|belt",names(testingData)[i])){
+                testingData[,i] <- as.numeric(testingData[,i])
+        }
+}
+
+testingData <- testingData[,c(-1,-2,-6)]
+```
+
+## Data Cleansing
+* Replaces all missing values (NA) with 0
+
+```{r warning=FALSE, error=FALSE, cache=T, results="hide"}
+for (j in 1:length(names(testingData))) {
+        for (i in 1:nrow(testingData)) {
+              if (is.na(testingData[i,j])) {testingData[i,j] <- 0}  
+        } 
+}
+```
+
+## Creating Dummy Variables
+* Convert all factor variables to dummy variables
+
+```{r cache=T, message=F}
+dummies <- dummyVars( ~ ., testingData, levelsOnly = TRUE)
+numData <- as.data.frame(predict(dummies, testingData))
+```
+
+## Predicting with Random Forest Model
+* Predicts the `classe` for each of the 20 testing cases
+```{r}
+answers = as.character(predict(rfTune, numData))
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(answers)
+```
+
+
